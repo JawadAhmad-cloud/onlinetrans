@@ -4,15 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LocalDrop AI - Smart P2P Transfer</title>
-    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- PeerJS for WebRTC -->
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
-    <!-- QRCode.js -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-    <!-- Font Awesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    <!-- Markdown Parser (Marked) for AI responses -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     
     <style>
@@ -54,10 +49,8 @@
 </head>
 <body class="min-h-screen flex flex-col items-center justify-center p-4">
 
-    <!-- Main Container -->
     <div class="glass w-full max-w-5xl rounded-2xl shadow-2xl overflow-hidden grid grid-cols-1 md:grid-cols-2">
 
-        <!-- Left Panel: Connection -->
         <div class="p-8 border-b md:border-b-0 md:border-r border-gray-700 flex flex-col justify-between">
             <div>
                 <h1 class="text-3xl font-bold mb-2 flex items-center gap-2">
@@ -66,7 +59,6 @@
                 </h1>
                 <p class="text-gray-400 text-sm mb-8">Secure P2P transfer with Gemini Intelligence</p>
 
-                <!-- My ID Section -->
                 <div class="bg-slate-800/50 p-4 rounded-xl mb-6">
                     <label class="text-xs font-bold text-gray-400 uppercase tracking-wider">Your Device ID</label>
                     <div class="flex items-center gap-2 mt-2">
@@ -77,13 +69,11 @@
                     </div>
                 </div>
 
-                <!-- QR Code Container -->
                 <div class="flex justify-center mb-6">
                     <div id="qrcode" class="bg-white p-2 rounded-lg shadow-lg"></div>
                 </div>
             </div>
 
-            <!-- Connection Input -->
             <div id="connect-panel">
                 <label class="text-xs font-bold text-gray-400 uppercase tracking-wider">Connect to Peer</label>
                 <div class="flex gap-2 mt-2">
@@ -103,10 +93,8 @@
             </div>
         </div>
 
-        <!-- Right Panel: Transfer & AI -->
         <div class="p-8 bg-slate-900/50 flex flex-col relative">
             
-            <!-- Default Drop Zone -->
             <div id="drop-zone" class="flex-1 border-2 border-dashed border-gray-600 rounded-2xl flex flex-col items-center justify-center p-8 transition-all hover:border-blue-400 hover:bg-blue-500/5 relative group cursor-pointer">
                 <input type="file" id="file-input" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer">
                 
@@ -118,7 +106,6 @@
                 <p class="text-xs text-gray-500 mt-4">Supports AI Analysis for Images & Text</p>
             </div>
 
-            <!-- Staged File Preview (Hidden by default) -->
             <div id="staged-file-view" class="hidden flex-1 flex flex-col">
                 <div class="flex items-center justify-between mb-4">
                     <h3 class="text-lg font-bold text-gray-200">Selected File</h3>
@@ -135,7 +122,6 @@
                     </div>
                 </div>
 
-                <!-- AI Section -->
                 <div id="ai-section" class="mb-6 hidden">
                     <div class="flex justify-between items-center mb-2">
                         <label class="text-xs font-bold text-purple-400 uppercase tracking-wider flex items-center gap-1">
@@ -165,7 +151,6 @@
                 </div>
             </div>
 
-            <!-- Progress Bar -->
             <div id="progress-container" class="hidden absolute inset-0 bg-slate-900/95 z-20 flex flex-col items-center justify-center p-8 backdrop-blur-sm">
                 <div class="w-full max-w-sm">
                     <div class="flex justify-between text-sm mb-2">
@@ -180,12 +165,10 @@
                 </div>
             </div>
 
-            <!-- Logs / History -->
             <div class="mt-6 border-t border-gray-800 pt-4">
                 <h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Recent Activity</h4>
                 <div id="activity-log" class="h-32 overflow-y-auto space-y-3 text-sm pr-2">
-                    <!-- Logs go here -->
-                </div>
+                    </div>
             </div>
 
         </div>
@@ -194,9 +177,14 @@
     <script>
         // --- Configuration ---
         const peerConfig = {
+            // CRITICAL FIX: Added public PeerJS server for connectivity.
+            host: '0.peerjs.com',
+            port: 443,
+            secure: true,
             debug: 1 // Minimal logs
         };
-        const apiKey = ""; // System provides this
+        // CRITICAL FIX: REPLACE THIS WITH YOUR ACTUAL KEY
+        const apiKey = "YOUR_GEMINI_API_KEY_HERE"; 
 
         // --- State ---
         let peer = null;
@@ -204,6 +192,7 @@
         let myId = "";
         let stagedFile = null;
         let incomingFile = { buffer: [], receivedSize: 0, meta: null };
+        let transferStartTime = 0; // NEW: To track speed
 
         // UI Elements
         const el = {
@@ -255,6 +244,20 @@
 
             peer.on('error', (err) => {
                 log(`Error: ${err.type}`, 'error');
+            });
+
+            // FIX 2: Add Enter key listener to connect
+            el.remoteInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    connectToPeer();
+                }
+            });
+            
+            // FIX 3: Add click listener to the drop zone to trigger the hidden file input
+            el.dropZone.addEventListener('click', () => {
+                 if (!el.dropZone.classList.contains('hidden')) {
+                    el.fileInput.click();
+                 }
             });
         }
 
@@ -365,6 +368,10 @@
         }
 
         async function callGemini(payload) {
+            if (apiKey === "YOUR_GEMINI_API_KEY_HERE" || apiKey === "") {
+                return "Error: Gemini API Key is missing. Please replace 'YOUR_GEMINI_API_KEY_HERE' in the code.";
+            }
+
             try {
                 el.aiLoading.classList.remove('hidden');
                 const response = await fetch(
@@ -376,13 +383,16 @@
                     }
                 );
                 
-                if (!response.ok) throw new Error("AI API Error");
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(`AI API Error: ${response.status} - ${errorData.error.message || 'Unknown error'}`);
+                }
                 
                 const data = await response.json();
                 return data.candidates[0].content.parts[0].text;
             } catch (error) {
                 console.error(error);
-                return "Error: Could not generate response.";
+                return `Error: Could not generate response. ${error.message}`;
             } finally {
                 el.aiLoading.classList.add('hidden');
             }
@@ -437,6 +447,7 @@
             log(`Sending ${file.name}...`);
             el.progressContainer.classList.remove('hidden');
             el.statusText.innerText = `Sending ${file.name}...`;
+            transferStartTime = Date.now(); // Record start time
 
             // Send Metadata (now with message)
             conn.send({
@@ -448,12 +459,14 @@
             });
 
             // Send Chunks
-            const CHUNK_SIZE = 16 * 1024;
+            const CHUNK_SIZE = 128 * 1024; // UPDATED for faster transfer
             const reader = new FileReader();
             let offset = 0;
 
             reader.onload = (e) => {
-                conn.send({ type: 'chunk', data: e.target.result });
+                // IMPORTANT: PeerJS can't send ArrayBuffer directly on data channels.
+                // We send it as is, but it's treated as a Blob/Binary by PeerJS internals
+                conn.send({ type: 'chunk', data: e.target.result }); 
                 offset += e.target.result.byteLength;
                 updateProgress(offset, file.size);
 
@@ -466,6 +479,11 @@
                         resetFile();
                     }, 1000);
                 }
+            };
+            
+            reader.onerror = (e) => {
+                log(`File reading error: ${e.target.error.name}`, 'error');
+                el.progressContainer.classList.add('hidden');
             };
 
             reader.readAsArrayBuffer(file.slice(0, CHUNK_SIZE));
@@ -480,6 +498,7 @@
                 
                 el.progressContainer.classList.remove('hidden');
                 el.statusText.innerText = `Receiving ${data.name}...`;
+                transferStartTime = Date.now(); // Record start time
                 
                 // If there is an AI message, show it in logs nicely
                 if (data.message) {
@@ -489,6 +508,7 @@
                 }
             
             } else if (data.type === 'chunk') {
+                // Data arriving will be an ArrayBuffer, push it to buffer
                 incomingFile.buffer.push(data.data);
                 incomingFile.receivedSize += data.data.byteLength;
                 updateProgress(incomingFile.receivedSize, incomingFile.meta.size);
@@ -524,6 +544,34 @@
             const percent = Math.floor((current / total) * 100);
             el.progressBar.style.width = `${percent}%`;
             el.progressPercent.innerText = `${percent}%`;
+
+            // NEW: Calculate speed and ETA
+            const elapsed = (Date.now() - transferStartTime) / 1000; // seconds
+            if (elapsed > 0) {
+                const bytesPerSec = current / elapsed;
+                
+                let speedText = `${formatBytes(bytesPerSec)}/s`;
+                
+                if (current < total && bytesPerSec > 0) {
+                     const remainingBytes = total - current;
+                     const eta = remainingBytes / bytesPerSec; // seconds
+                     const timeRemaining = formatTime(eta);
+                     speedText += ` (${timeRemaining} remaining)`;
+                }
+
+                // Update the status text with speed info
+                const filename = incomingFile.meta?.name || stagedFile?.name || 'File';
+                const statusType = incomingFile.meta ? 'Receiving' : 'Sending';
+                el.statusText.innerText = `${statusType} ${filename} | ${speedText}`;
+            }
+        }
+
+        function formatTime(seconds) {
+            const s = Math.round(seconds);
+            if (s < 60) return `${s}s`;
+            const minutes = Math.floor(s / 60);
+            const remainingSeconds = s % 60;
+            return `${minutes}m ${remainingSeconds}s`;
         }
 
         function formatBytes(bytes) {
@@ -536,7 +584,7 @@
 
         function log(msg, type = 'info') {
             const div = document.createElement('div');
-            div.className = `p-2 rounded border-l-2 text-xs ${type === 'error' ? 'bg-red-900/20 border-red-500 text-red-200' : 'bg-slate-800 border-blue-500 text-gray-300'}`;
+            div.className = `p-2 rounded border-l-2 text-xs ${type === 'error' ? 'bg-red-900/20 border-red-500 text-red-200' : type === 'success' ? 'bg-green-900/20 border-green-500 text-green-200' : 'bg-slate-800 border-blue-500/50 text-gray-300'}`;
             div.innerText = msg;
             el.log.prepend(div);
         }
@@ -568,11 +616,17 @@
             resetFile();
         }
 
-        // Drag & Drop Handlers
+        // Drag & Drop Handlers (Kept as is - prevent default for whole body)
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
             document.body.addEventListener(eventName, e => {
                 e.preventDefault(); e.stopPropagation();
             }, false);
+        });
+        
+        // Add dragleave/drop handlers for the drop zone specifically
+        el.dropZone.addEventListener('drop', (e) => {
+             const file = e.dataTransfer.files[0];
+             if (file) stageFile(file);
         });
 
         init();
