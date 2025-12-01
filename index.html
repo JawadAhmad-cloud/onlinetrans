@@ -96,7 +96,7 @@
         <div class="p-8 bg-slate-900/50 flex flex-col relative">
             
             <div id="drop-zone" class="flex-1 border-2 border-dashed border-gray-600 rounded-2xl flex flex-col items-center justify-center p-8 transition-all hover:border-blue-400 hover:bg-blue-500/5 relative group cursor-pointer">
-                <input type="file" id="file-input" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer">
+                <input type="file" id="file-input" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer" multiple>
                 
                 <div class="w-20 h-20 bg-slate-800 rounded-full flex items-center justify-center mb-4 group-hover:scale-110 transition shadow-xl">
                     <i class="fas fa-cloud-upload-alt text-3xl text-blue-400"></i>
@@ -162,6 +162,9 @@
                             <div class="absolute inset-0 bg-white/20 w-full h-full animate-pulse"></div>
                         </div>
                     </div>
+                    <button onclick="cancelTransfer('send')" class="mt-4 w-full bg-red-600 hover:bg-red-500 text-white font-bold py-2 rounded-xl transition">
+                        Cancel Transfer
+                    </button>
                 </div>
             </div>
 
@@ -177,11 +180,10 @@
     <script>
         // --- Configuration ---
         const peerConfig = {
-            // CRITICAL FIX: Added public PeerJS server for connectivity.
             host: '0.peerjs.com',
             port: 443,
             secure: true,
-            debug: 1 // Minimal logs
+            debug: 1
         };
         // CRITICAL FIX: REPLACE THIS WITH YOUR ACTUAL KEY
         const apiKey = "YOUR_GEMINI_API_KEY_HERE"; 
@@ -192,7 +194,9 @@
         let myId = "";
         let stagedFile = null;
         let incomingFile = { buffer: [], receivedSize: 0, meta: null };
-        let transferStartTime = 0; // NEW: To track speed
+        let transferStartTime = 0; 
+        let fileReader = null; // NEW: To hold the FileReader instance for cancellation
+        let isSending = false; // NEW: Flag to control sending loop
 
         // UI Elements
         const el = {
@@ -246,19 +250,15 @@
                 log(`Error: ${err.type}`, 'error');
             });
 
-            // FIX 2: Add Enter key listener to connect
+            // Added Enter key listener to connect
             el.remoteInput.addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') {
                     connectToPeer();
                 }
             });
             
-            // FIX 3: Add click listener to the drop zone to trigger the hidden file input
-            el.dropZone.addEventListener('click', () => {
-                 if (!el.dropZone.classList.contains('hidden')) {
-                    el.fileInput.click();
-                 }
-            });
+            // FIX 3: Removed the custom JS click handler on dropZone.
+            // We rely on the invisible <input type="file"> covering the area for better mobile reliability.
         }
 
         function generateQR(id) {
@@ -300,6 +300,7 @@
 
         // --- File Staging & AI Logic ---
         el.fileInput.addEventListener('change', (e) => {
+            // FIX 1: Only stage the first file, even if multiple were selected.
             const file = e.target.files[0];
             if (!file) return;
             stageFile(file);
@@ -440,67 +441,93 @@
         async function confirmSend() {
             if (!stagedFile) return;
             if (!conn || !conn.open) return alert("Not connected to a peer!");
-            
+            // NEW: Prevent multiple sends
+            if (isSending) return;
+
             const file = stagedFile;
             const message = el.fileMessage.value;
+            isSending = true; // Set flag to true
 
             log(`Sending ${file.name}...`);
             el.progressContainer.classList.remove('hidden');
             el.statusText.innerText = `Sending ${file.name}...`;
-            transferStartTime = Date.now(); // Record start time
+            transferStartTime = Date.now(); 
 
-            // Send Metadata (now with message)
+            // Send Metadata 
             conn.send({
                 type: 'meta',
                 name: file.name,
                 size: file.size,
                 mime: file.type,
-                message: message // ✨ Send the AI generated message
+                message: message 
             });
 
             // Send Chunks
-            const CHUNK_SIZE = 128 * 1024; // UPDATED for faster transfer
-            const reader = new FileReader();
+            const CHUNK_SIZE = 128 * 1024;
+            fileReader = new FileReader(); // Store reader globally
             let offset = 0;
 
-            reader.onload = (e) => {
-                // IMPORTANT: PeerJS can't send ArrayBuffer directly on data channels.
-                // We send it as is, but it's treated as a Blob/Binary by PeerJS internals
+            fileReader.onload = (e) => {
+                // NEW: Check flag to see if we should continue
+                if (!isSending) return; 
+
                 conn.send({ type: 'chunk', data: e.target.result }); 
                 offset += e.target.result.byteLength;
                 updateProgress(offset, file.size);
 
                 if (offset < file.size) {
-                    reader.readAsArrayBuffer(file.slice(offset, offset + CHUNK_SIZE));
+                    fileReader.readAsArrayBuffer(file.slice(offset, offset + CHUNK_SIZE));
                 } else {
+                    isSending = false; // Transfer complete
                     log(`Sent ${file.name} successfully.`);
                     setTimeout(() => {
-                        el.progressContainer.classList.add('hidden');
+                        resetTransferUI(); // Use new reset function
                         resetFile();
                     }, 1000);
                 }
             };
             
-            reader.onerror = (e) => {
+            fileReader.onerror = (e) => {
+                isSending = false;
                 log(`File reading error: ${e.target.error.name}`, 'error');
-                el.progressContainer.classList.add('hidden');
+                resetTransferUI();
             };
 
-            reader.readAsArrayBuffer(file.slice(0, CHUNK_SIZE));
+            fileReader.readAsArrayBuffer(file.slice(0, CHUNK_SIZE));
         }
 
+        // NEW: Function to handle transfer cancellation (sender or receiver)
+        window.cancelTransfer = (role) => {
+            if (!conn || !conn.open) return;
+            
+            if (role === 'send' && isSending) {
+                // 1. Stop the sender's FileReader loop (by setting flag to false)
+                isSending = false;
+                
+                // 2. Send a 'cancel' signal to the peer
+                conn.send({ type: 'cancel' }); 
+                
+                log("Sending cancelled by user.", 'error');
+                resetTransferUI();
+
+            } else if (role === 'receive' && incomingFile.meta) {
+                // 3. Stop the receiver's process 
+                log("Receiving cancelled due to sender's request.", 'error');
+                resetTransferState();
+                resetTransferUI();
+            }
+        }
+        
         // Receive File
         function handleIncomingData(data) {
             if (data.type === 'meta') {
+                resetTransferState(); // Clear state for new incoming file
                 incomingFile.meta = data;
-                incomingFile.buffer = [];
-                incomingFile.receivedSize = 0;
                 
                 el.progressContainer.classList.remove('hidden');
                 el.statusText.innerText = `Receiving ${data.name}...`;
-                transferStartTime = Date.now(); // Record start time
+                transferStartTime = Date.now(); 
                 
-                // If there is an AI message, show it in logs nicely
                 if (data.message) {
                     logIncomingMessage(data.message, data.name);
                 } else {
@@ -508,7 +535,9 @@
                 }
             
             } else if (data.type === 'chunk') {
-                // Data arriving will be an ArrayBuffer, push it to buffer
+                // Safety check: ensure we have meta and haven't finished/cancelled
+                if (!incomingFile.meta) return; 
+
                 incomingFile.buffer.push(data.data);
                 incomingFile.receivedSize += data.data.byteLength;
                 updateProgress(incomingFile.receivedSize, incomingFile.meta.size);
@@ -516,6 +545,8 @@
                 if (incomingFile.receivedSize >= incomingFile.meta.size) {
                     saveFile();
                 }
+            } else if (data.type === 'cancel') { // NEW: Handle cancel signal
+                cancelTransfer('receive');
             }
         }
 
@@ -532,11 +563,25 @@
             
             log(`Received ${incomingFile.meta.name} successfully.`, 'success');
             setTimeout(() => {
-                el.progressContainer.classList.add('hidden');
+                resetTransferUI();
                 URL.revokeObjectURL(url);
             }, 1000);
 
+            resetTransferState();
+        }
+
+        // NEW: Function to reset the transfer state
+        function resetTransferState() {
             incomingFile = { buffer: [], receivedSize: 0, meta: null };
+        }
+
+        // NEW: Function to reset the transfer UI
+        function resetTransferUI() {
+            el.progressContainer.classList.add('hidden');
+            el.progressBar.style.width = '0%';
+            el.progressPercent.innerText = '0%';
+            el.statusText.innerText = 'Idle';
+            isSending = false;
         }
 
         // --- Helpers ---
@@ -545,7 +590,6 @@
             el.progressBar.style.width = `${percent}%`;
             el.progressPercent.innerText = `${percent}%`;
 
-            // NEW: Calculate speed and ETA
             const elapsed = (Date.now() - transferStartTime) / 1000; // seconds
             if (elapsed > 0) {
                 const bytesPerSec = current / elapsed;
@@ -553,13 +597,12 @@
                 let speedText = `${formatBytes(bytesPerSec)}/s`;
                 
                 if (current < total && bytesPerSec > 0) {
-                     const remainingBytes = total - current;
-                     const eta = remainingBytes / bytesPerSec; // seconds
-                     const timeRemaining = formatTime(eta);
-                     speedText += ` (${timeRemaining} remaining)`;
+                    const remainingBytes = total - current;
+                    const eta = remainingBytes / bytesPerSec; // seconds
+                    const timeRemaining = formatTime(eta);
+                    speedText += ` (${timeRemaining} remaining)`;
                 }
 
-                // Update the status text with speed info
                 const filename = incomingFile.meta?.name || stagedFile?.name || 'File';
                 const statusType = incomingFile.meta ? 'Receiving' : 'Sending';
                 el.statusText.innerText = `${statusType} ${filename} | ${speedText}`;
@@ -612,7 +655,7 @@
         function resetUI() {
             el.connectPanel.classList.remove('hidden');
             el.statusPanel.classList.add('hidden');
-            el.progressContainer.classList.add('hidden');
+            resetTransferUI();
             resetFile();
         }
 
@@ -623,7 +666,7 @@
             }, false);
         });
         
-        // Add dragleave/drop handlers for the drop zone specifically
+        // Drop handler for the drop zone specifically
         el.dropZone.addEventListener('drop', (e) => {
              const file = e.dataTransfer.files[0];
              if (file) stageFile(file);
