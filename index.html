@@ -86,11 +86,16 @@
             </div>
 
             <div id="status-panel" class="hidden mt-4">
-                <div class="bg-green-500/20 text-green-400 p-3 rounded-lg flex items-center gap-3 border border-green-500/30">
-                    <div class="w-3 h-3 bg-green-500 rounded-full anim-pulse-slow"></div>
-                    <span class="font-bold">Connected to Peer</span>
+                <div class="bg-green-500/20 text-green-400 p-3 rounded-lg flex items-center justify-between border border-green-500/30">
+                    <div class="flex items-center gap-3">
+                        <div class="w-3 h-3 bg-green-500 rounded-full anim-pulse-slow"></div>
+                        <span class="font-bold">Connected to Peer</span>
+                    </div>
+                    <button onclick="disconnectPeer()" class="text-white bg-red-600 hover:bg-red-700 text-xs py-1 px-3 rounded-lg font-semibold transition shadow-md">
+                        <i class="fas fa-unlink"></i> Disconnect
+                    </button>
                 </div>
-            </div>
+                </div>
         </div>
 
         <div class="p-8 bg-slate-900/50 flex flex-col relative">
@@ -180,12 +185,12 @@
     <script>
         // --- Configuration ---
         const peerConfig = {
+            // This configuration ensures WAN (Internet) connectivity via public STUN/TURN servers.
             host: '0.peerjs.com',
             port: 443,
             secure: true,
             debug: 1
         };
-        // CRITICAL FIX: REPLACE THIS WITH YOUR ACTUAL KEY
         const apiKey = "YOUR_GEMINI_API_KEY_HERE"; 
 
         // --- State ---
@@ -195,10 +200,10 @@
         let stagedFile = null;
         let incomingFile = { buffer: [], receivedSize: 0, meta: null };
         let transferStartTime = 0; 
-        let fileReader = null; // NEW: To hold the FileReader instance for cancellation
-        let isSending = false; // NEW: Flag to control sending loop
+        let fileReader = null;
+        let isSending = false; 
 
-        // UI Elements
+        // UI Elements (same as before)
         const el = {
             myId: document.getElementById('my-id'),
             qr: document.getElementById('qrcode'),
@@ -223,7 +228,7 @@
             log: document.getElementById('activity-log')
         };
 
-        // --- Initialization ---
+        // --- Initialization & Connection ---
         function init() {
             const shortId = Math.random().toString(36).substring(2, 6).toUpperCase();
             peer = new Peer(shortId, peerConfig);
@@ -248,17 +253,26 @@
 
             peer.on('error', (err) => {
                 log(`Error: ${err.type}`, 'error');
+                // Attempt to reconnect if peer dies
+                if (err.type === 'peer-unavailable' || err.type === 'disconnected') {
+                     setTimeout(init, 5000);
+                }
             });
 
-            // Added Enter key listener to connect
             el.remoteInput.addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') {
                     connectToPeer();
                 }
             });
-            
-            // FIX 3: Removed the custom JS click handler on dropZone.
-            // We rely on the invisible <input type="file"> covering the area for better mobile reliability.
+        }
+        
+        // NEW FUNCTION: Disconnect button handler
+        window.disconnectPeer = () => {
+            if (conn) {
+                log(`Manually disconnecting from ${conn.peer}.`);
+                conn.close();
+                // conn.on('close') handles the UI reset
+            }
         }
 
         function generateQR(id) {
@@ -274,10 +288,13 @@
             });
         }
 
-        // --- Connection Handling ---
         function connectToPeer(forcedId = null) {
             const remoteId = forcedId || el.remoteInput.value.toUpperCase();
             if (!remoteId) return alert("Please enter a Peer ID");
+            if (conn && conn.open) {
+                log("Already connected. Disconnect first.", 'error');
+                return;
+            }
 
             log(`Connecting to ${remoteId}...`);
             const connection = peer.connect(remoteId);
@@ -293,14 +310,13 @@
             });
             conn.on('data', handleIncomingData);
             conn.on('close', () => {
-                log("Connection lost");
+                log(`Connection to ${conn.peer} lost or closed.`);
                 resetUI();
             });
         }
 
-        // --- File Staging & AI Logic ---
+        // --- File Staging & AI Logic (Unchanged from previous edit) ---
         el.fileInput.addEventListener('change', (e) => {
-            // FIX 1: Only stage the first file, even if multiple were selected.
             const file = e.target.files[0];
             if (!file) return;
             stageFile(file);
@@ -313,9 +329,8 @@
             
             el.stagedName.innerText = file.name;
             el.stagedSize.innerText = formatBytes(file.size);
-            el.fileMessage.value = ""; // Clear previous message
+            el.fileMessage.value = ""; 
             
-            // AI Button Logic
             el.aiSection.classList.remove('hidden');
             el.btnAiDescribe.classList.add('hidden');
             el.btnAiSummarize.classList.add('hidden');
@@ -331,7 +346,6 @@
                 el.btnAiSummarize.classList.remove('hidden');
             } else {
                 el.stagedIcon.innerHTML = '<i class="fas fa-file"></i>';
-                // Hide AI section if not supported
                 el.aiSection.classList.add('hidden'); 
             }
         }
@@ -342,10 +356,8 @@
             el.dropZone.classList.remove('hidden');
             el.stagedView.classList.add('hidden');
         }
-
-        // --- Gemini Integration ---
         
-        // Helper to convert file to Base64
+        // --- Gemini Integration (Unchanged) ---
         function fileToBase64(file) {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -358,7 +370,6 @@
             });
         }
 
-        // Helper to read text content
         function fileToText(file) {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -423,7 +434,6 @@
             el.fileMessage.placeholder = "Generating summary...";
             
             const textContent = await fileToText(stagedFile);
-            // Truncate if too huge to avoid payload limits (approx 30k chars safe)
             const safeText = textContent.slice(0, 30000); 
 
             const payload = {
@@ -436,24 +446,21 @@
             el.fileMessage.value = result;
         }
 
-        // --- File Transfer Logic ---
-        
+        // --- File Transfer Logic (Unchanged) ---
         async function confirmSend() {
             if (!stagedFile) return;
             if (!conn || !conn.open) return alert("Not connected to a peer!");
-            // NEW: Prevent multiple sends
             if (isSending) return;
 
             const file = stagedFile;
             const message = el.fileMessage.value;
-            isSending = true; // Set flag to true
+            isSending = true; 
 
             log(`Sending ${file.name}...`);
             el.progressContainer.classList.remove('hidden');
             el.statusText.innerText = `Sending ${file.name}...`;
             transferStartTime = Date.now(); 
 
-            // Send Metadata 
             conn.send({
                 type: 'meta',
                 name: file.name,
@@ -462,13 +469,11 @@
                 message: message 
             });
 
-            // Send Chunks
             const CHUNK_SIZE = 128 * 1024;
-            fileReader = new FileReader(); // Store reader globally
+            fileReader = new FileReader();
             let offset = 0;
 
             fileReader.onload = (e) => {
-                // NEW: Check flag to see if we should continue
                 if (!isSending) return; 
 
                 conn.send({ type: 'chunk', data: e.target.result }); 
@@ -478,10 +483,10 @@
                 if (offset < file.size) {
                     fileReader.readAsArrayBuffer(file.slice(offset, offset + CHUNK_SIZE));
                 } else {
-                    isSending = false; // Transfer complete
-                    log(`Sent ${file.name} successfully.`);
+                    isSending = false;
+                    log(`Sent ${file.name} successfully.`, 'success');
                     setTimeout(() => {
-                        resetTransferUI(); // Use new reset function
+                        resetTransferUI(); 
                         resetFile();
                     }, 1000);
                 }
@@ -496,32 +501,25 @@
             fileReader.readAsArrayBuffer(file.slice(0, CHUNK_SIZE));
         }
 
-        // NEW: Function to handle transfer cancellation (sender or receiver)
         window.cancelTransfer = (role) => {
             if (!conn || !conn.open) return;
             
             if (role === 'send' && isSending) {
-                // 1. Stop the sender's FileReader loop (by setting flag to false)
                 isSending = false;
-                
-                // 2. Send a 'cancel' signal to the peer
                 conn.send({ type: 'cancel' }); 
-                
                 log("Sending cancelled by user.", 'error');
                 resetTransferUI();
 
             } else if (role === 'receive' && incomingFile.meta) {
-                // 3. Stop the receiver's process 
                 log("Receiving cancelled due to sender's request.", 'error');
                 resetTransferState();
                 resetTransferUI();
             }
         }
         
-        // Receive File
         function handleIncomingData(data) {
             if (data.type === 'meta') {
-                resetTransferState(); // Clear state for new incoming file
+                resetTransferState();
                 incomingFile.meta = data;
                 
                 el.progressContainer.classList.remove('hidden');
@@ -535,7 +533,6 @@
                 }
             
             } else if (data.type === 'chunk') {
-                // Safety check: ensure we have meta and haven't finished/cancelled
                 if (!incomingFile.meta) return; 
 
                 incomingFile.buffer.push(data.data);
@@ -545,7 +542,7 @@
                 if (incomingFile.receivedSize >= incomingFile.meta.size) {
                     saveFile();
                 }
-            } else if (data.type === 'cancel') { // NEW: Handle cancel signal
+            } else if (data.type === 'cancel') {
                 cancelTransfer('receive');
             }
         }
@@ -570,12 +567,11 @@
             resetTransferState();
         }
 
-        // NEW: Function to reset the transfer state
+        // --- Helpers ---
         function resetTransferState() {
             incomingFile = { buffer: [], receivedSize: 0, meta: null };
         }
 
-        // NEW: Function to reset the transfer UI
         function resetTransferUI() {
             el.progressContainer.classList.add('hidden');
             el.progressBar.style.width = '0%';
@@ -584,13 +580,12 @@
             isSending = false;
         }
 
-        // --- Helpers ---
         function updateProgress(current, total) {
             const percent = Math.floor((current / total) * 100);
             el.progressBar.style.width = `${percent}%`;
             el.progressPercent.innerText = `${percent}%`;
 
-            const elapsed = (Date.now() - transferStartTime) / 1000; // seconds
+            const elapsed = (Date.now() - transferStartTime) / 1000;
             if (elapsed > 0) {
                 const bytesPerSec = current / elapsed;
                 
@@ -598,7 +593,7 @@
                 
                 if (current < total && bytesPerSec > 0) {
                     const remainingBytes = total - current;
-                    const eta = remainingBytes / bytesPerSec; // seconds
+                    const eta = remainingBytes / bytesPerSec; 
                     const timeRemaining = formatTime(eta);
                     speedText += ` (${timeRemaining} remaining)`;
                 }
@@ -657,16 +652,16 @@
             el.statusPanel.classList.add('hidden');
             resetTransferUI();
             resetFile();
+            conn = null; // IMPORTANT: Clear the connection object
         }
 
-        // Drag & Drop Handlers (Kept as is - prevent default for whole body)
+        // Drag & Drop Handlers
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
             document.body.addEventListener(eventName, e => {
                 e.preventDefault(); e.stopPropagation();
             }, false);
         });
         
-        // Drop handler for the drop zone specifically
         el.dropZone.addEventListener('drop', (e) => {
              const file = e.dataTransfer.files[0];
              if (file) stageFile(file);
